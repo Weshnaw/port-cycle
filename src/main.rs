@@ -235,7 +235,7 @@ async fn is_node_reachable(ip: &str, port: u16) -> bool {
 
 async fn trigger_event(node_name: &str, client: &Client, cfg: &Config, port: &u32) {
     info!("Remediating node: {node_name}");
-    // power_cycle(client, cfg, port)
-    //     .await
-    //     .expect("Failed to cycle poe");
+    power_cycle(client, cfg, port)
+        .await
+        .expect("Failed to cycle poe");
 }
