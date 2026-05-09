@@ -11,6 +11,7 @@ use kube_leader_election::{LeaseLock, LeaseLockParams, LeaseLockResult};
 use reqwest::Client;
 use serde_json::json;
 use tokio::net::TcpStream;
+use tokio::sync::Mutex;
 use tokio::time::{interval, timeout};
 
 struct Config {
@@ -67,9 +68,13 @@ async fn power_cycle(client: &Client, cfg: &Config, port: &u32) -> Result<(), Bo
     Ok(())
 }
 
-// #[tokio::main]
-// async fn main() {
-
+const RECOVERY_THRESHOLD: u32 = 5;
+const FAILURE_THRESHOLD: u32 = 3;
+struct NodeState {
+    consecutive_failures: u32,
+    consecutive_successes: u32,
+    remediating: bool,
+}
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     dotenvy::dotenv().ok();
@@ -133,6 +138,7 @@ async fn main() -> anyhow::Result<()> {
     .into_iter()
     .collect();
 
+    let nodes_state: Arc<Mutex<HashMap<String, NodeState>>> = Arc::new(Mutex::new(HashMap::new()));
     println!("Starting loop");
     loop {
         ticker.tick().await;
@@ -152,13 +158,53 @@ async fn main() -> anyhow::Result<()> {
                 .map(|a| a.address.clone())
                 .unwrap_or_default();
 
-            println!("Checking node: {}:{}", &name, &ip);
             if let Some(port) = map.get(&name)
                 && !ip.is_empty()
-                && !is_node_reachable(&ip, 10250).await
             {
-                println!("Node {name} is UNREACHABLE — triggering event");
-                trigger_event(&name, &cycle_client, &cfg, port).await;
+                println!("Checking node: {}:{}", &name, &ip);
+                let reachable = is_node_reachable(&ip, 10250).await;
+
+                let mut states = nodes_state.lock().await;
+                let state = states.entry(name.clone()).or_insert(NodeState {
+                    consecutive_failures: 0,
+                    consecutive_successes: 0,
+                    remediating: false,
+                });
+
+                if reachable {
+                    state.consecutive_failures = 0;
+                    if state.remediating {
+                        state.consecutive_successes += 1;
+                        println!(
+                            "Node {name} reachable, waiting for stability ({}/{RECOVERY_THRESHOLD})",
+                            state.consecutive_successes
+                        );
+
+                        if state.consecutive_successes >= RECOVERY_THRESHOLD {
+                            println!("Node {name} is stable...");
+                            state.remediating = false;
+                        }
+                    }
+                } else {
+                    state.consecutive_successes = 0;
+                    if state.remediating {
+                        println!("Waiting for {name} to become reachable again...");
+                    } else {
+                        state.consecutive_failures += 1;
+
+                        println!(
+                            "Node {name} unreachable, waiting for failure threshold ({}/{FAILURE_THRESHOLD})",
+                            state.consecutive_failures
+                        );
+
+                        if state.consecutive_failures >= FAILURE_THRESHOLD {
+                            println!("Node {name} is unreachable — triggering power cycle");
+                            state.remediating = true;
+                            drop(states);
+                            trigger_event(&name, &cycle_client, &cfg, port).await;
+                        }
+                    }
+                }
             }
         }
     }
