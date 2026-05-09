@@ -9,18 +9,18 @@ ENV APP_GROUP=appgroup \
 WORKDIR /build
 COPY Cargo.toml ./
 COPY Cargo.lock ./
-RUN mkdir -p src
-RUN echo 'fn main() {}' > src/main.rs
-RUN cargo build --release 2>/dev/null || true
-RUN rm -f src/main.rs
+RUN mkdir -p src \
+    && echo 'fn main() {}' > src/main.rs \
+    && cargo build --release 2>/dev/null || true \
+    && rm -f src/main.rs
 
 # Build the application
 COPY ./src ./src
 RUN cargo build --release
-
 # Create Group and User
-RUN groupadd -g $APP_GID $APP_GROUP && useradd -l -u $APP_UID -g $APP_GROUP -s /sbin/nologin $APP_USER
-RUN chown $APP_UID:$APP_GID /build/target/release/port-cycle
+RUN groupadd -g $APP_GID $APP_GROUP \
+    && useradd -l -u $APP_UID -g $APP_GROUP -s /sbin/nologin $APP_USER \
+    && chown $APP_UID:$APP_GID /build/target/release/port-cycle
 
 FROM gcr.io/distroless/cc-debian13:latest AS runtime
 
