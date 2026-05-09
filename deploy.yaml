@@ -54,6 +54,7 @@ spec:
       serviceAccountName: node-checker
       containers:
         - name: checker
+          image: ghcr.io/weshnaw/port-cycle/port-cycle:master
           envFrom:
             - secretRef:
                 name: unifi-secret
