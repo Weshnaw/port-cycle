@@ -1,0 +1,73 @@
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: node-checker
+  namespace: bfall-me
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: node-checker
+rules:
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["list", "watch"]
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "create", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: node-checker
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: node-checker
+subjects:
+  - kind: ServiceAccount
+    name: node-checker
+    namespace: default
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: unifi-secret
+  namespace: bfall-me
+type: Opaque
+stringData:
+  UNIFI_CONSOLE: "${UNIFI_CONSOLE}"
+  UNIFI_SITE: "${UNIFI_SITE}"
+  UNIFI_DEVICE: "${UNIFI_DEVICE}"
+  UNIFI_KEY: "${UNIFI_KEY}"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: node-checker
+  namespace: bfall-me
+spec:
+  replicas: 3
+  template:
+    spec:
+      serviceAccountName: node-checker
+      containers:
+        - name: checker
+          envFrom:
+            - secretRef:
+                name: unifi-secret
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: UNIFI_CONTROLLER
+              value: "https://api.ui.com/v1"
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  app: node-checker
+              topologyKey: kubernetes.io/hostname
