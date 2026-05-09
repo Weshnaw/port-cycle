@@ -32,4 +32,5 @@ COPY --from=builder /build/target/release/port-cycle /app/port-cycle
 # Start the application
 WORKDIR /app
 USER $APP_UID
+ENV RUST_LOG="warn,port_cycle=info"
 ENTRYPOINT ["/app/port-cycle"]

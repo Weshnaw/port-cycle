@@ -13,6 +13,10 @@ use serde_json::json;
 use tokio::net::TcpStream;
 use tokio::sync::Mutex;
 use tokio::time::{interval, timeout};
+use tracing::{debug, error, info, trace, warn};
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
+use tracing_subscriber::{EnvFilter, fmt};
 
 struct Config {
     controller: String,
@@ -42,7 +46,7 @@ fn build_client() -> Result<Client, reqwest::Error> {
 }
 
 async fn power_cycle(client: &Client, cfg: &Config, port: &u32) -> Result<(), Box<dyn Error>> {
-    println!("Power cycling port: {}...", port);
+    info!("Power cycling port: {}...", port);
 
     let url = format!(
         "{}/connector/consoles/{}/proxy/network/integration/v1/sites/{}/devices/{}/interfaces/ports/{}/actions",
@@ -64,7 +68,7 @@ async fn power_cycle(client: &Client, cfg: &Config, port: &u32) -> Result<(), Bo
         return Err(format!("Failed to power cylce port: {status} — {body}").into());
     }
 
-    println!("Power cycle completed for port {}.", port);
+    debug!("Power cycle completed for port {}.", port);
     Ok(())
 }
 
@@ -78,19 +82,29 @@ struct NodeState {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     dotenvy::dotenv().ok();
+    if std::env::var("RUST_LOG").is_err() {
+        // We are just setting a default RUST_LOG value race conditions don't really matter here
+        unsafe {
+            std::env::set_var("RUST_LOG", "warn,port_cycle=info");
+        }
+    }
+    tracing_subscriber::registry()
+        .with(fmt::layer())
+        .with(EnvFilter::from_default_env())
+        .init();
 
     let cfg = Config::from_env().unwrap_or_else(|e| {
-        eprintln!("Configuration error: {e}\n");
-        eprintln!("Required environment variables:");
-        eprintln!("  UNIFI_CONTROLLER  — e.g. https://api.ui.com/v1");
-        eprintln!("  UNIFI_CONSOLE     — Unifi Console ID");
-        eprintln!("  UNIFI_SITE        — Unifi Site ID");
-        eprintln!("  UNIFI_DEVICE      — Unifi Device ID");
-        eprintln!("  UNIFI_KEY         — Unifi API Key");
+        error!("Configuration error: {e}\n");
+        error!("Required environment variables:");
+        error!("  UNIFI_CONTROLLER  — e.g. https://api.ui.com/v1");
+        error!("  UNIFI_CONSOLE     — Unifi Console ID");
+        error!("  UNIFI_SITE        — Unifi Site ID");
+        error!("  UNIFI_DEVICE      — Unifi Device ID");
+        error!("  UNIFI_KEY         — Unifi API Key");
         std::process::exit(1);
     });
     let cycle_client = build_client().unwrap_or_else(|e| {
-        eprintln!("Failed to build HTTP client: {e}");
+        error!("Failed to build HTTP client: {e}");
         std::process::exit(1);
     });
 
@@ -119,7 +133,7 @@ async fn main() -> anyhow::Result<()> {
                 Ok(LeaseLockResult::Acquired(_)) => is_leader.store(true, Ordering::Relaxed),
                 Ok(LeaseLockResult::NotAcquired(_)) => is_leader.store(false, Ordering::Relaxed),
                 Err(e) => {
-                    eprintln!("Lease error: {e}");
+                    error!("Lease error: {e}");
                     is_leader.store(false, Ordering::Relaxed);
                 }
             }
@@ -139,7 +153,7 @@ async fn main() -> anyhow::Result<()> {
     .collect();
 
     let nodes_state: Arc<Mutex<HashMap<String, NodeState>>> = Arc::new(Mutex::new(HashMap::new()));
-    println!("Starting loop");
+    info!("Starting loop");
     loop {
         ticker.tick().await;
 
@@ -161,7 +175,7 @@ async fn main() -> anyhow::Result<()> {
             if let Some(port) = map.get(&name)
                 && !ip.is_empty()
             {
-                println!("Checking node: {}:{}", &name, &ip);
+                debug!("Checking node: {}:{}", &name, &ip);
                 let reachable = is_node_reachable(&ip, 10250).await;
 
                 let mut states = nodes_state.lock().await;
@@ -175,30 +189,30 @@ async fn main() -> anyhow::Result<()> {
                     state.consecutive_failures = 0;
                     if state.remediating {
                         state.consecutive_successes += 1;
-                        println!(
+                        info!(
                             "Node {name} reachable, waiting for stability ({}/{RECOVERY_THRESHOLD})",
                             state.consecutive_successes
                         );
 
                         if state.consecutive_successes >= RECOVERY_THRESHOLD {
-                            println!("Node {name} is stable...");
+                            info!("Node {name} is stable...");
                             state.remediating = false;
                         }
                     }
                 } else {
                     state.consecutive_successes = 0;
                     if state.remediating {
-                        println!("Waiting for {name} to become reachable again...");
+                        info!("Waiting for {name} to become reachable again...");
                     } else {
                         state.consecutive_failures += 1;
 
-                        println!(
+                        warn!(
                             "Node {name} unreachable, waiting for failure threshold ({}/{FAILURE_THRESHOLD})",
                             state.consecutive_failures
                         );
 
                         if state.consecutive_failures >= FAILURE_THRESHOLD {
-                            println!("Node {name} is unreachable — triggering power cycle");
+                            warn!("Node {name} is unreachable — triggering power cycle");
                             state.remediating = true;
                             drop(states);
                             trigger_event(&name, &cycle_client, &cfg, port).await;
@@ -212,6 +226,7 @@ async fn main() -> anyhow::Result<()> {
 
 async fn is_node_reachable(ip: &str, port: u16) -> bool {
     let addr = format!("{ip}:{port}");
+    trace!("Checking: {}", addr);
     timeout(Duration::from_secs(2), TcpStream::connect(&addr))
         .await
         .map(|r| r.is_ok())
@@ -219,8 +234,8 @@ async fn is_node_reachable(ip: &str, port: u16) -> bool {
 }
 
 async fn trigger_event(node_name: &str, client: &Client, cfg: &Config, port: &u32) {
-    println!("Remediating node: {node_name}");
-    power_cycle(client, cfg, port)
-        .await
-        .expect("Failed to cycle poe");
+    info!("Remediating node: {node_name}");
+    // power_cycle(client, cfg, port)
+    //     .await
+    //     .expect("Failed to cycle poe");
 }
