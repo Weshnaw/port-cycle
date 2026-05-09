@@ -1,2 +1,2 @@
 [env]
-RUST_LOG = "info,port_cycle=debug"
+RUST_LOG = "warn,port_cycle=info"

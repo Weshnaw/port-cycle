@@ -213,9 +213,8 @@ async fn main() -> anyhow::Result<()> {
 
                         if state.consecutive_failures >= FAILURE_THRESHOLD {
                             warn!("Node {name} is unreachable — triggering power cycle");
-                            state.remediating = true;
-                            drop(states);
-                            trigger_event(&name, &cycle_client, &cfg, port).await;
+                            state.remediating =
+                                trigger_event(&name, &cycle_client, &cfg, port).await;
                         }
                     }
                 }
@@ -233,9 +232,10 @@ async fn is_node_reachable(ip: &str, port: u16) -> bool {
         .unwrap_or(false)
 }
 
-async fn trigger_event(node_name: &str, client: &Client, cfg: &Config, port: &u32) {
+async fn trigger_event(node_name: &str, client: &Client, cfg: &Config, port: &u32) -> bool {
     info!("Remediating node: {node_name}");
     power_cycle(client, cfg, port)
         .await
-        .expect("Failed to cycle poe");
+        .inspect_err(|e| error!("Failed to power_cycle port: {port}: {}", e))
+        .is_ok()
 }
