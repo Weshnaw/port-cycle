@@ -34,5 +34,5 @@ jobs:
       - name: Lint Dockerfile
         uses: hadolint/hadolint-action@v3.1.0
         with:
-          dockerfile: tailscale-ingress-controller/Dockerfile
+          dockerfile: Dockerfile
           ignore: DL3007
